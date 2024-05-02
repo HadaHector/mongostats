@@ -25,13 +25,15 @@ users_stat.on_start_event("unique_userid")
 users_stat.on_end_event("unique_userid")
 ```
 # Usage
-1. You need to provide a pymong.MongoClient object as this module will not handle the creation and closure of the db connection. You can choose the database to use.
+1. You need to provide a pymongo.MongoClient object as this module will not handle the creation and closure of the db connection. You can choose the database to use.
 Call `mongostats.initialize_connection(client,"dbname")`.
 2. Create your staticstics objects.
 3. Call the `on_interval()` function on your statistics objects with the required frequency. For session based stats you need to call it the smallest scale of the stat,
 for event based statistics the needed frequency is only the second smallest scale. 
 For example: if you measure an event on minute basis, you only need to call it every hour, however if it is a session based you need to call it every minute
 4. Get the data from the stats when you need, you can use the `get_data_view` function for this
-5. 
+
+For more details read the comments of the classes.
+
 Originally this module was planned to be used from an AWS lambda function.
 
