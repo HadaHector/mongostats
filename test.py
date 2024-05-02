@@ -1,6 +1,6 @@
-import main as stat
+import testsetup as setup
 
-stat.initialize("mongodb://localhost:27017/","statdb")
-TestStat = stat.EventStat('test')
-TestStat.onEvent()
-TestStat.onInterval()
+stat = setup.stats["testevent"]
+
+stat.onEvent()
+stat.onInterval()

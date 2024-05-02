@@ -1,14 +1,16 @@
 from datetime import datetime,timedelta
 from enum import Enum
-from pymongo import MongoClient, errors
+import pymongo
 from enum import IntEnum
+
+import pymongo.collection
 
 dbclient = None
 database = None
 
 def initialize(mongourl,dbname):
 	global dbclient, database
-	dbclient = MongoClient(mongourl)
+	dbclient = pymongo.MongoClient(mongourl)
 	database = dbclient[dbname]
 
 class ConfigException(Exception):
@@ -51,40 +53,68 @@ class StatBase:
 		if interval.value >= EventInterval.SECOND.value:
 			now = now.replace(microsecond = 0)
 		return now
-
+	
+	def getPrevInterval(interval:EventInterval,time) -> datetime:
+		if interval == EventInterval.MONTH:
+			if time.month == 1:
+				time = time.replace(year=time.year-1,month=12)
+			else:
+				time = time.replace(month=time.month-1)
+		elif interval == EventInterval.DAY:
+			time = time + timedelta(days=-1)
+		elif interval == EventInterval.HOUR:
+			time = time + timedelta(hours=-1)
+		elif interval == EventInterval.MINUTE:
+			time = time + timedelta(minutes=-1)
+		elif interval == EventInterval.SECOND:
+			time = time + timedelta(seconds=-1)
+		return time
+	
+	def getNextInterval(interval:EventInterval,time) -> datetime:
+		if interval == EventInterval.MONTH:
+			if time.month == 12:
+				time = time.replace(year=time.year+1,month=1)
+			else:
+				time = time.replace(month=time.month+1)
+		elif interval == EventInterval.DAY:
+			time = time + timedelta(days=1)
+		elif interval == EventInterval.HOUR:
+			time = time + timedelta(hours=1)
+		elif interval == EventInterval.MINUTE:
+			time = time + timedelta(minutes=1)
+		elif interval == EventInterval.SECOND:
+			time = time + timedelta(seconds=1)
+		return time
+	
 	def getPrevDatetimeForInterval(interval:EventInterval,time=None) -> datetime:
 		if not time:
 			now = datetime.now(tz=None)
 		else:
 			now = time
 		now = StatBase.getDatetimeForInterval(interval,now)
-		
-		if interval == EventInterval.MONTH:
-			if now.month == 1:
-				now = now.replace(year=now.year-1,month=12)
-			else:
-				now = now.replace(month=now.month-1)
-		elif interval == EventInterval.DAY:
-			now = now + timedelta(days=-1)
-		elif interval == EventInterval.HOUR:
-			now = now + timedelta(hours=-1)
-		elif interval == EventInterval.MINUTE:
-			now = now + timedelta(minutes=-1)
-		elif interval == EventInterval.SECOND:
-			now = now + timedelta(seconds=-1)
+		now = StatBase.getPrevInterval(interval,now)
 		return now
 	
-
+	def getNextDatetimeForInterval(interval:EventInterval,time=None) -> datetime:
+		if not time:
+			now = datetime.now(tz=None)
+		else:
+			now = time
+		now = StatBase.getDatetimeForInterval(interval,now)
+		now = StatBase.getNextInterval(interval,now)
+		return now
 
 class EventStat(StatBase):
 	
-	def onEvent(self) -> None:
+	def getCollection(self,interval:EventInterval) -> pymongo.collection:
 		global database
-		
+		return database[self.name+"_"+str(interval)]
+	
+	def onEvent(self) -> None:		
 		smallestInterval = self.intervals[0]
 		time = StatBase.getDatetimeForInterval(smallestInterval)
 
-		coll = database[self.name+"_"+str(smallestInterval)]
+		coll = self.getCollection(smallestInterval)
 		coll.update_one({"_id":time},{"$inc":{"value":1}},True)
 	
 	def onInterval(self) -> None:
@@ -103,8 +133,8 @@ class EventStat(StatBase):
 			currenttime = StatBase.getDatetimeForInterval(interval,now) #end of the measure window
 
 			#collection to collect the data from
-			coll = database[self.name+"_"+str(EventInterval(interval.value-1))]
-			colltarget = database[self.name+"_"+str(interval)]
+			coll = self.getCollection(EventInterval(interval.value-1))
+			colltarget = self.getCollection(interval)
 	
 			if colltarget.count_documents({"_id":time}) == 0:
 				coll.aggregate([
@@ -116,11 +146,32 @@ class EventStat(StatBase):
 				#if the $match is empty, no document is created
 				if colltarget.count_documents({"_id":time}) == 0:
 					colltarget.insert_one({"_id":time,"value":0})
-				
+	
+	def getDataView(self,interval:EventInterval,startDate:datetime,endDate:datetime):
+		coll = self.getCollection(interval)
+		documents = list(coll.find({"_id":{"$gte":startDate,"$lte":endDate}},sort=[('_id', pymongo.ASCENDING)]))
+
+		keys = []
+		values = []
+
+		key = StatBase.getPrevDatetimeForInterval(interval,startDate)
+		docidx = 0
+		while True:
+			keys.append(key)
+			if docidx<len(documents) and documents[docidx]["_id"] == key:
+				values.append(documents[docidx]["value"])
+				docidx += 1
+			else:
+				values.append(0)
+			key = StatBase.getNextInterval(interval,key)
+			if key > endDate:
+				break
+		
+		return keys,values
+
 
 class EventState(StatBase):
 
-	#todo add TTL support
 	def __init__(self, name: str, startEvent:str=None, endEvent:str=None, magnitudeEvent:str=None, durationEvent:str=None, minInterval: EventInterval = EventInterval.MINUTE, maxInterval: EventInterval = EventInterval.MONTH, expireAfterSeconds=None) -> None:
 		super().__init__(name, minInterval, maxInterval)
 
@@ -128,7 +179,7 @@ class EventState(StatBase):
 		self.startEvent.intervals = self.intervals
 		self.endEvent = EventStat(endEvent)
 		self.endEvent.intervals = self.intervals
-		self.magnitudeEvent = magnitudeEvent
+		self.magnitudeEvent = EventStat(magnitudeEvent)
 		self.durationEvent = durationEvent
 
 		if expireAfterSeconds:
@@ -145,7 +196,7 @@ class EventState(StatBase):
 		coll = self.getSessionCollection()
 		try:
 			coll.insert_one({"_id":id,"created":datetime.now()})
-		except errors.DuplicateKeyError:
+		except pymongo.errors.DuplicateKeyError:
 			self.onEndEvent(id)
 			self.onStartEvent(id)
 			return
@@ -188,7 +239,7 @@ class EventState(StatBase):
 			sessioncoll = self.getSessionCollection()
 			count = sessioncoll.count_documents({})
 
-			coll = database[self.magnitudeEvent+"_"+str(smallestInterval)]
+			coll = self.magnitudeEvent.getCollection(smallestInterval)
 			coll.insert_one({"_id":time,"value":count},True)
 
 		for i in range(1,len(self.intervals)):
@@ -199,8 +250,8 @@ class EventState(StatBase):
 			currenttime = StatBase.getDatetimeForInterval(interval,now) #end of the measure window
 
 			#collection to collect the data from
-			coll = database[self.magnitudeEvent+"_"+str(EventInterval(interval.value-1))]
-			colltarget = database[self.magnitudeEvent+"_"+str(interval)]
+			coll = self.magnitudeEvent.getCollection(EventInterval(interval.value-1))
+			colltarget = self.magnitudeEvent.getCollection(interval)
 	
 			if colltarget.count_documents({"_id":time}) == 0:
 				coll.aggregate([
