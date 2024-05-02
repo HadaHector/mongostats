@@ -1,5 +1,4 @@
 from datetime import datetime,timedelta
-from enum import Enum
 import pymongo
 from enum import IntEnum
 
@@ -9,6 +8,9 @@ dbclient = None
 database = None
 
 def initialize(mongourl,dbname):
+	"""
+	This function initializes the database connection for the statistics
+	"""
 	global dbclient, database
 	dbclient = pymongo.MongoClient(mongourl)
 	database = dbclient[dbname]
@@ -17,6 +19,9 @@ class ConfigException(Exception):
 	pass
 
 class EventInterval(IntEnum):
+	"""
+	Statistics measuring interval
+	"""
 	SECOND = 1
 	MINUTE = 2
 	HOUR = 3
@@ -105,8 +110,21 @@ class StatBase:
 		return now
 
 class EventStat(StatBase):
-	
-	def getCollection(self,interval:EventInterval) -> pymongo.collection:
+	"""
+	Basic event based statistics.
+	"""
+	def __init__(self, name: str, minInterval: EventInterval = EventInterval.MINUTE, maxInterval: EventInterval = EventInterval.MONTH) -> None:
+		"""
+		It measures how many times a given event happened. Does not	store any data connected to the events.
+
+		:Parameters:
+		  - `name`: name of the state, it will be used in the collection name
+		  - `minInterval`: smallest time interval of the measurement
+		  - `maxInterval`: largest time interval of the measurement
+		"""
+		super().__init__(name, minInterval, maxInterval)
+
+	def _getCollection(self,interval:EventInterval) -> pymongo.collection:
 		global database
 		return database[self.name+"_"+str(interval)]
 	
@@ -114,10 +132,16 @@ class EventStat(StatBase):
 		smallestInterval = self.intervals[0]
 		time = StatBase.getDatetimeForInterval(smallestInterval)
 
-		coll = self.getCollection(smallestInterval)
+		coll = self._getCollection(smallestInterval)
 		coll.update_one({"_id":time},{"$inc":{"value":1}},True)
+		"""
+		Call this function when the event happens
+		"""
 	
 	def onInterval(self) -> None:
+		"""
+		Call this function periodically, at least as often as the second smallest interval
+		"""
 		global database
 		#let's assume this is called every second smallest interval
 		if len(self.intervals) < 2:
@@ -133,8 +157,8 @@ class EventStat(StatBase):
 			currenttime = StatBase.getDatetimeForInterval(interval,now) #end of the measure window
 
 			#collection to collect the data from
-			coll = self.getCollection(EventInterval(interval.value-1))
-			colltarget = self.getCollection(interval)
+			coll = self._getCollection(EventInterval(interval.value-1))
+			colltarget = self._getCollection(interval)
 	
 			if colltarget.count_documents({"_id":time}) == 0:
 				coll.aggregate([
@@ -147,8 +171,12 @@ class EventStat(StatBase):
 				if colltarget.count_documents({"_id":time}) == 0:
 					colltarget.insert_one({"_id":time,"value":0})
 	
-	def getDataView(self,interval:EventInterval,startDate:datetime,endDate:datetime):
-		coll = self.getCollection(interval)
+	def getDataView(self,interval:EventInterval,startDate:datetime,endDate:datetime) -> tuple[list[datetime],list[int]]:
+		"""
+		Gets the collected data from the time range.
+		Returns a list of keys and values as `list[datetime], list[int]`
+		"""
+		coll = self._getCollection(interval)
 		documents = list(coll.find({"_id":{"$gte":startDate,"$lte":endDate}},sort=[('_id', pymongo.ASCENDING)]))
 
 		keys = []
@@ -171,29 +199,61 @@ class EventStat(StatBase):
 
 
 class EventState(StatBase):
-
-	def __init__(self, name: str, startEvent:str=None, endEvent:str=None, magnitudeEvent:str=None, durationEvent:str=None, minInterval: EventInterval = EventInterval.MINUTE, maxInterval: EventInterval = EventInterval.MONTH, expireAfterSeconds=None) -> None:
+	"""
+	A stat object for event based statistics
+	"""
+	def __init__(self, name: str, startEvent:str=None, endEvent:str=None, magnitudeEvent:str=None, durationEvent:str=None,
+			minInterval: EventInterval = EventInterval.MINUTE, maxInterval: EventInterval = EventInterval.MONTH, expireAfterSeconds=None) -> None:
+		"""
+		:Parameters:
+		  - `name`: name of the state, it will be used in the session collection name
+		  - `startEvent` (optional): name of the start event, if provided it will be measured in
+		    an :class:`EventStat` object, the events will be triggered at `onStartEvent` function call
+		  - `endEvent` (optional): name of the end event, if provided it will be measured in
+		    an :class:`EventStat` object, the events will be triggered at `onEndEvent` function call
+		  - `magnitudeEvent` (optional): name of the magnitude event, if provided it will be measured in
+		    an :class:`EventStat` object, the current count of the session is recorded at the intervals
+		  - `durationEvent` (optional): name of the collection where the session durations are stored
+		    if provided
+		  - `minInterval`: smallest time interval of the measurement
+		  - `maxInterval`: largest time interval of the measurement
+		  - `expireAfterSeconds` (optional): if provided the sessions will have a TTL set with this time amount.
+		    the expired sessions will not create duration events
+		"""
 		super().__init__(name, minInterval, maxInterval)
 
-		self.startEvent = EventStat(startEvent)
-		self.startEvent.intervals = self.intervals
-		self.endEvent = EventStat(endEvent)
-		self.endEvent.intervals = self.intervals
-		self.magnitudeEvent = EventStat(magnitudeEvent)
-		self.durationEvent = durationEvent
+		if startEvent:
+			self.startEvent:EventStat | None = EventStat(startEvent)
+			"Optional EventStat for session start events"
+			self.startEvent.intervals = self.intervals
+		if endEvent:
+			self.endEvent:EventStat | None = EventStat(endEvent)
+			"Optional EventStat for session end events"
+			self.endEvent.intervals = self.intervals
+		if magnitudeEvent:
+			self.magnitudeEvent:EventStat | None = EventStat(magnitudeEvent)
+			"Optional EventStat for the magnitude of the session count"
+		self.durationEventName = durationEvent
 
 		if expireAfterSeconds:
 			global database
 			self.useTtl = True
-			self.getSessionCollection().create_index({"expires":1},expireAfterSeconds=expireAfterSeconds)
+			self._getSessionCollection().create_index({"expires":1},expireAfterSeconds=expireAfterSeconds)
 
-	def getSessionCollection(self):
+	def _getSessionCollection(self):
+		"""
+		"""
 		return database[self.name+"_SESSION"]
 	
 	def onStartEvent(self,id):
+		"""
+		Call this function when the state starts. Provide a unique id for the state, you will need to call
+		`onEndEvent` with the same id when the state ends. The `id` can be any datatype that can be any type that the pymongo
+		can handle
+		"""
 		global database
 
-		coll = self.getSessionCollection()
+		coll = self._getSessionCollection()
 		try:
 			coll.insert_one({"_id":id,"created":datetime.now()})
 		except pymongo.errors.DuplicateKeyError:
@@ -205,9 +265,12 @@ class EventState(StatBase):
 			self.startEvent.onEvent()
 	
 	def onEndEvent(self,id):
+		"""
+		Call this function when the state ends. Provide a unique id for the state
+		"""
 		global database
 
-		coll = self.getSessionCollection()
+		coll = self._getSessionCollection()
 		doc = coll.find_one_and_delete({"_id":id})
 		if  not doc:
 			return
@@ -215,15 +278,17 @@ class EventState(StatBase):
 		if self.endEvent:
 			self.endEvent.onEvent()
 
-		if self.durationEvent:
+		if self.durationEventName:
 			delta = datetime.now() - doc["created"]
 			duration = delta.total_seconds()
 
-			coll = database[self.durationEvent]
+			coll = database[self.durationEventName]
 			coll.insert_one({"duration":duration,"endTime":datetime.now()})
 	
 	def onInterval(self) -> None:
-
+		"""
+		Call this function periodically, at least as often as the second smallest interval
+		"""
 		now = datetime.now(tz=None)
 
 		if self.startEvent:
@@ -236,10 +301,10 @@ class EventState(StatBase):
 		time = StatBase.getDatetimeForInterval(smallestInterval,now) #end of the measure window
 
 		if self.magnitudeEvent:
-			sessioncoll = self.getSessionCollection()
+			sessioncoll = self._getSessionCollection()
 			count = sessioncoll.count_documents({})
 
-			coll = self.magnitudeEvent.getCollection(smallestInterval)
+			coll = self.magnitudeEvent._getCollection(smallestInterval)
 			coll.insert_one({"_id":time,"value":count},True)
 
 		for i in range(1,len(self.intervals)):
@@ -250,8 +315,8 @@ class EventState(StatBase):
 			currenttime = StatBase.getDatetimeForInterval(interval,now) #end of the measure window
 
 			#collection to collect the data from
-			coll = self.magnitudeEvent.getCollection(EventInterval(interval.value-1))
-			colltarget = self.magnitudeEvent.getCollection(interval)
+			coll = self.magnitudeEvent._getCollection(EventInterval(interval.value-1))
+			colltarget = self.magnitudeEvent._getCollection(interval)
 	
 			if colltarget.count_documents({"_id":time}) == 0:
 				coll.aggregate([
@@ -264,12 +329,4 @@ class EventState(StatBase):
 				if colltarget.count_documents({"_id":time}) == 0:
 					colltarget.insert_one({"_id":time,"value":0})
 		
-
-
-
-
-
-
-
-
 
