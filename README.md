@@ -32,5 +32,6 @@ Call `mongostats.initialize_connection(client,"dbname")`.
 for event based statistics the needed frequency is only the second smallest scale. 
 For example: if you measure an event on minute basis, you only need to call it every hour, however if it is a session based you need to call it every minute
 4. Get the data from the stats when you need, you can use the `get_data_view` function for this
+5. 
 Originally this module was planned to be used from an AWS lambda function.
 
