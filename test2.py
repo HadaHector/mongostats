@@ -1,8 +1,8 @@
+import testsetup as setup
 import main as stat
 
-stat.initialize("mongodb://localhost:27017/","statdb")
-TestStat = stat.EventState('users',startEvent="login",endEvent="logout",magnitudeEvent="CCU",durationEvent="sessionLength")
+test_stat:stat.StateStat = setup.stat["users"]
 
-TestStat.onStartEvent("sanyi")
-TestStat.onEndEvent("bela")
-TestStat.onInterval()
+test_stat.on_start_event("sanyi")
+test_stat.on_end_event("bela")
+test_stat.on_interval()

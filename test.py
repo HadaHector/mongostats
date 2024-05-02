@@ -1,6 +1,7 @@
 import testsetup as setup
+import main as stat
 
-stat = setup.stats["testevent"]
+test_stat:stat.EventStat = setup.stats["testevent"]
 
-stat.onEvent()
-stat.onInterval()
+test_stat.on_event()
+test_stat.on_interval()
