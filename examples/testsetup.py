@@ -1,4 +1,4 @@
-import main as stat
+import mongostats as stat
 from pymongo import MongoClient
 
 client = MongoClient("mongodb://localhost:27017/")

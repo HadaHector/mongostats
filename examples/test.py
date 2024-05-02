@@ -1,5 +1,5 @@
 import testsetup as setup
-import main as stat
+import mongostats as stat
 
 test_stat:stat.EventStat = setup.stats["testevent"]
 

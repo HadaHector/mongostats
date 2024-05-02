@@ -1,5 +1,5 @@
 import plotly.express as px
-import main as stat
+import mongostats as stat
 from datetime import datetime
 import pandas as pd
 
