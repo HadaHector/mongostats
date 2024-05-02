@@ -121,7 +121,7 @@ class EventStat(StatBase):
 class EventState(StatBase):
 
 	#todo add TTL support
-	def __init__(self, name: str, startEvent:str=None, endEvent:str=None, magnitudeEvent:str=None, durationEvent:str=None, minInterval: EventInterval = EventInterval.MINUTE, maxInterval: EventInterval = EventInterval.MONTH, ttl=None) -> None:
+	def __init__(self, name: str, startEvent:str=None, endEvent:str=None, magnitudeEvent:str=None, durationEvent:str=None, minInterval: EventInterval = EventInterval.MINUTE, maxInterval: EventInterval = EventInterval.MONTH, expireAfterSeconds=None) -> None:
 		super().__init__(name, minInterval, maxInterval)
 
 		self.startEvent = EventStat(startEvent)
@@ -131,10 +131,18 @@ class EventState(StatBase):
 		self.magnitudeEvent = magnitudeEvent
 		self.durationEvent = durationEvent
 
+		if expireAfterSeconds:
+			global database
+			self.useTtl = True
+			self.getSessionCollection().create_index({"expires":1},expireAfterSeconds=expireAfterSeconds)
+
+	def getSessionCollection(self):
+		return database[self.name+"_SESSION"]
+	
 	def onStartEvent(self,id):
 		global database
 
-		coll = database[self.name+"_SESSION"]
+		coll = self.getSessionCollection()
 		try:
 			coll.insert_one({"_id":id,"created":datetime.now()})
 		except errors.DuplicateKeyError:
@@ -148,7 +156,7 @@ class EventState(StatBase):
 	def onEndEvent(self,id):
 		global database
 
-		coll = database[self.name+"_SESSION"]
+		coll = self.getSessionCollection()
 		doc = coll.find_one_and_delete({"_id":id})
 		if  not doc:
 			return
@@ -177,7 +185,7 @@ class EventState(StatBase):
 		time = StatBase.getDatetimeForInterval(smallestInterval,now) #end of the measure window
 
 		if self.magnitudeEvent:
-			sessioncoll = database[self.name+"_SESSION"]
+			sessioncoll = self.getSessionCollection()
 			count = sessioncoll.count_documents({})
 
 			coll = database[self.magnitudeEvent+"_"+str(smallestInterval)]
