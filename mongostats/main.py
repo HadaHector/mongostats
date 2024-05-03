@@ -3,6 +3,7 @@ import pymongo as pymongo
 from enum import IntEnum
 from math import copysign
 import pymongo.collection
+import typing
 
 dbclient = None
 database = None
@@ -181,7 +182,7 @@ class EventStat(StatBase):
     
     @handle_database_errors
     def get_data_view(self,interval:EventInterval,start_date:datetime,
-                      end_date:datetime) -> tuple[list[datetime],list[int]]:
+                      end_date:datetime) -> typing.Tuple[typing.List[datetime],typing.List[int]]:
         """
         Gets the collected data from the time range.
         Returns a list of keys and values as `list[datetime], list[int]`
