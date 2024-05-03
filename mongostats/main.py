@@ -84,7 +84,7 @@ class StatBase:
                 if amount > 0 and time.month == 12:
                     time = time.replace(year=time.year+1,month=1)
                 else:
-                    time = time.replace(month=time.month+copysign(amount))
+                    time = time.replace(month=time.month+copysign(1,amount))
         elif interval == EventInterval.DAY:
             time = time + timedelta(days=amount)
         elif interval == EventInterval.HOUR:
