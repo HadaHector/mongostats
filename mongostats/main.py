@@ -1,7 +1,6 @@
 from datetime import datetime,timedelta
 import pymongo as pymongo
 from enum import IntEnum
-from math import copysign
 import pymongo.collection
 import typing
 
@@ -85,7 +84,7 @@ class StatBase:
                 if amount > 0 and time.month == 12:
                     time = time.replace(year=time.year+1,month=1)
                 else:
-                    time = time.replace(month=time.month+copysign(1,amount))
+                    time = time.replace(month=time.month+(1 if amount>0 else -1)))
         elif interval == EventInterval.DAY:
             time = time + timedelta(days=amount)
         elif interval == EventInterval.HOUR:
@@ -159,7 +158,7 @@ class EventStat(StatBase):
             #check if the result exists and create the aggregation if needed
             current_time = StatBase.get_datetime_for_interval(interval,now) 
             #end of the measure window
-            time = StatBase.get_prev_interval(interval,now) 
+            time = StatBase.get_prev_interval(interval,current_time) 
             #start of the measure window
 
             #collection to collect the data from
@@ -251,20 +250,26 @@ class StateStat(StatBase):
             self.start_event:EventStat | None = EventStat(start_event)
             "Optional EventStat for session start events"
             self.start_event.intervals = self.intervals
+        else:
+            self.start_event = None
         if end_event:
             self.end_event:EventStat | None = EventStat(end_event)
             "Optional EventStat for session end events"
             self.end_event.intervals = self.intervals
+        else:
+            self.end_event = None
         if magnitude_event:
             self.magnitude_event:EventStat | None = EventStat(magnitude_event)
             "Optional EventStat for the magnitude of the session count"
+        else:
+            self.magnitude_event = None
         self.duration_event_name = duration_event
 
         if expire_after_seconds:
             global database
             self.useTtl = True
             self._get_session_collection().create_index(
-                {"expires":1},
+                {"created":1},
                 expireAfterSeconds=expire_after_seconds)
 
     def _get_session_collection(self):
@@ -339,7 +344,7 @@ class StateStat(StatBase):
             count = sessioncoll.count_documents({})
 
             coll = self.magnitude_event._get_collection(smallest_interval)
-            coll.insert_one({"_id":time,"value":count},True)
+            coll.insert_one({"_id":time,"value":count})
 
         for i in range(1,len(self.intervals)):
             interval = self.intervals[i]
@@ -347,7 +352,7 @@ class StateStat(StatBase):
             #check if the result exists and create the aggregation if needed
             currenttime = StatBase.get_datetime_for_interval(interval,now)
             #end of the measure window
-            time = StatBase.get_prev_interval(interval,now)
+            time = StatBase.get_prev_interval(interval,currenttime)
             #start of the measure window
 
             #collection to collect the data from
@@ -359,9 +364,8 @@ class StateStat(StatBase):
                 coll.aggregate([
                     {"$match":{"_id":{"$lt":currenttime,"$gte":time}}},
                     {"$group":{"_id":time,"value":{"$max":"$value"}}},
-                    {"$out":{
-                        "db": database.name,
-                        "coll":self.magnitude_event+"_"+str(interval)
+                    {"$merge":{
+                        "into":self.magnitude_event.name+"_"+str(interval)
                     }}
                 ])
 
@@ -369,4 +373,4 @@ class StateStat(StatBase):
                 if colltarget.count_documents({"_id":time}) == 0:
                     colltarget.insert_one({"_id":time,"value":0})
         
-
+ 
