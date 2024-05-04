@@ -84,7 +84,7 @@ class StatBase:
                 if amount > 0 and time.month == 12:
                     time = time.replace(year=time.year+1,month=1)
                 else:
-                    time = time.replace(month=time.month+(1 if amount>0 else -1)))
+                    time = time.replace(month=time.month+(1 if amount>0 else -1))
         elif interval == EventInterval.DAY:
             time = time + timedelta(days=amount)
         elif interval == EventInterval.HOUR:
@@ -220,6 +220,7 @@ class StateStat(StatBase):
     def __init__(
             self, name: str, start_event:str=None, end_event:str=None,
             magnitude_event:str=None, duration_event:str=None,
+            unique_start_event:str=None,
             min_interval: EventInterval = EventInterval.MINUTE,
             max_interval: EventInterval = EventInterval.MONTH,
             expire_after_seconds=None) -> None:
@@ -236,6 +237,9 @@ class StateStat(StatBase):
           - `magnitude_event` (optional): name of the magnitude event, if
             provided it will be measured in an :class:`EventStat` object, the
             current count of the session is recorded at the intervals
+          - `unique_start_event` (optional): name of the unique start event,
+            if provided it will be measured in an :class:`EventStat` object,
+            the unique ids that has session in the interval measured
           - `duration_event` (optional): name of the collection where the
             session durations are stored if provided
           - `min_interval`: smallest time interval of the measurement
@@ -246,35 +250,38 @@ class StateStat(StatBase):
         """
         super().__init__(name, min_interval, max_interval)
 
+        self.start_event:EventStat | None = None
+        "Optional EventStat for session start events"
+        self.end_event:EventStat | None = None
+        "Optional EventStat for session end events"
+        self.magnitude_event:EventStat | None = None
+        "Optional EventStat for the magnitude of the session count"
+        self.unique_start_event:EventStat | None = None
+        "Optional EventStat for the unique session activity"
+
         if start_event:
-            self.start_event:EventStat | None = EventStat(start_event)
-            "Optional EventStat for session start events"
+            self.start_event = EventStat(start_event)
             self.start_event.intervals = self.intervals
-        else:
-            self.start_event = None
         if end_event:
-            self.end_event:EventStat | None = EventStat(end_event)
-            "Optional EventStat for session end events"
+            self.end_event = EventStat(end_event)
             self.end_event.intervals = self.intervals
-        else:
-            self.end_event = None
         if magnitude_event:
             self.magnitude_event:EventStat | None = EventStat(magnitude_event)
-            "Optional EventStat for the magnitude of the session count"
-        else:
-            self.magnitude_event = None
+            self.magnitude_event.intervals = self.intervals
+        if unique_start_event:
+            self.unique_start_event:EventStat | None = EventStat(unique_start_event)
+            self.unique_start_event.intervals = self.intervals
+
         self.duration_event_name = duration_event
 
         if expire_after_seconds:
             global database
-            self.useTtl = True
+            self.use_ttl = True
             self._get_session_collection().create_index(
                 {"created":1},
                 expireAfterSeconds=expire_after_seconds)
 
     def _get_session_collection(self):
-        """
-        """
         return database[self.name+"_SESSION"]
     
     @handle_database_errors
@@ -287,13 +294,20 @@ class StateStat(StatBase):
         """
         global database
 
-        coll = self._get_session_collection()
         try:
+            coll = self._get_session_collection()
             coll.insert_one({"_id":id,"created":datetime.now()})
         except pymongo.DuplicateKeyError:
             self.on_end_event(id)
             self.on_start_event(id)
             return
+        
+        if self.unique_start_event:
+            for i in range(1,len(self.intervals)):
+                interval = self.intervals[i]
+                coll = database[self.name+"_UNIQUE_"+interval]
+                doc = {"_id":id}
+                coll.replace_one(doc,doc,upsert=True)
 
         if self.start_event:
             self.start_event.on_event()
@@ -355,22 +369,46 @@ class StateStat(StatBase):
             time = StatBase.get_prev_interval(interval,currenttime)
             #start of the measure window
 
-            #collection to collect the data from
-            coll = self.magnitude_event._get_collection(
-                EventInterval(interval.value-1))
-            colltarget = self.magnitude_event._get_collection(interval)
-    
-            if colltarget.count_documents({"_id":time}) == 0:
-                coll.aggregate([
-                    {"$match":{"_id":{"$lt":currenttime,"$gte":time}}},
-                    {"$group":{"_id":time,"value":{"$max":"$value"}}},
-                    {"$merge":{
-                        "into":self.magnitude_event.name+"_"+str(interval)
-                    }}
+            if self.magnitude_event:
+                #collection to collect the data from
+                coll = self.magnitude_event._get_collection(
+                    EventInterval(interval.value-1))
+                colltarget = self.magnitude_event._get_collection(interval)
+        
+                if colltarget.count_documents({"_id":time}) == 0:
+                    coll.aggregate([
+                        {"$match":{"_id":{"$lt":currenttime,"$gte":time}}},
+                        {"$group":{"_id":time,"value":{"$max":"$value"}}},
+                        {"$merge":{
+                            "into":self.magnitude_event.name+"_"+str(interval)
+                        }}
+                    ])
+
+                    #if the $match is empty, no document is created
+                    if colltarget.count_documents({"_id":time}) == 0:
+                        colltarget.insert_one({"_id":time,"value":0})
+        
+        smallest_rounded = StatBase.get_datetime_for_interval(interval,now)
+        for i in range(len(self.unique_start_event.intervals)):
+            interval = self.unique_start_event.intervals[i]
+            currenttime = StatBase.get_datetime_for_interval(interval,now)
+
+            #only do the larger intervals when needed
+            if smallest_rounded == currenttime:
+                coll = self.unique_start_event._get_collection(interval)
+                measurecoll = database[self.name+"_UNIQUE_"+interval]
+                
+                #get the count of ids on the current interval and save it
+                count = measurecoll.count_documents()
+                coll.insert_one({"_id":currenttime,"value":count})
+
+                #overwrite the current ids with the currently online players ids
+                # sessions -> unique_interval
+                self._get_session_collection().aggregate([
+                    {"$project":{"_id":1}},
+                    {"$out":self.name+"_UNIQUE_"+interval}
                 ])
 
-                #if the $match is empty, no document is created
-                if colltarget.count_documents({"_id":time}) == 0:
-                    colltarget.insert_one({"_id":time,"value":0})
+
         
  
