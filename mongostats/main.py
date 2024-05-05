@@ -169,9 +169,8 @@ class EventStat(StatBase):
                 coll.aggregate([
                     {"$match":{"_id":{"$lt":current_time,"$gte":time}}},
                     {"$group":{"_id":time,"value":{"$sum":"$value"}}},
-                    {"$out":{
-                        "db": database.name,
-                        "coll":self.name+"_"+str(interval)
+                    {"$merge":{
+                        "out":self.name+"_"+str(interval)
                     }}
                 ])
 
