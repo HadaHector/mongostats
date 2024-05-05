@@ -3,6 +3,7 @@ import pymongo as pymongo
 from enum import IntEnum
 import pymongo.collection
 import typing
+import math
 
 dbclient = None
 database = None
@@ -186,30 +187,173 @@ class EventStat(StatBase):
         Returns a list of keys and values as `list[datetime], list[int]`
         """
         coll = self._get_collection(interval)
-        documents = list(coll.find(
+        cursor = coll.find(
             filter={"_id":{"$gte":start_date,"$lte":end_date}},
             sort=[('_id', pymongo.ASCENDING)]
-        ))
+        )
 
         keys = []
         values = []
 
         key = StatBase.get_datetime_for_interval(interval,start_date)
         key = StatBase.get_prev_interval(interval,key) 
-        doc_idx = 0
+        
+        doc = None
+        no_more_doc = False
+        needs_next_doc = True
         while True:
             keys.append(key)
-            if doc_idx<len(documents) and documents[doc_idx]["_id"] == key:
-                values.append(documents[doc_idx]["value"])
-                doc_idx += 1
-            else:
-                values.append(0)
+            value = 0
+            if not no_more_doc:
+                if needs_next_doc:
+                    try:
+                        doc = cursor.next()
+                    except StopIteration:
+                        no_more_doc = True
+                if doc["_id"] == key:
+                    value = doc["value"]
+                    needs_next_doc = True
+                else:
+                    needs_next_doc = False
+            values.append(value)
             key = StatBase.get_next_interval(interval,key)
             if key > end_date:
                 break
         
         return keys,values
 
+class NumericStat(EventStat):
+    """
+    Basic number based statistics.
+    """
+
+    @handle_database_errors
+    def on_event(self,count) -> None:
+        """
+        Call this function when the event happens
+        """
+        if not math.isfinite(count):
+            return
+        
+        smallestInterval = self.intervals[0]
+        time = StatBase.get_datetime_for_interval(smallestInterval)
+
+        coll = self._get_collection(smallestInterval)
+        coll.update_one({"_id":time},{"$inc":{"value":count}},True)
+
+class MultiNumericStat(StatBase):
+    """
+    Number based statistics with parameter. The result is similar to having multiple
+    EventStats, but it is dynamical.
+    """
+
+    @handle_database_errors
+    def __init__(self, name: str, min_interval: EventInterval = EventInterval.MINUTE, max_interval: EventInterval = EventInterval.MONTH) -> None:
+        super().__init__(name, min_interval, max_interval)
+        
+        for interval in self.intervals:
+            self._get_collection(interval).create_index({"_id.time":1})
+
+    def _get_collection(self,
+                        interval:EventInterval) -> pymongo.collection:
+        global database
+        return database[self.name+"_"+str(interval)]
+    
+    @handle_database_errors
+    def on_event(self,parameter,count) -> None:
+        """
+        Call this function when the event happens
+        """
+        smallestInterval = self.intervals[0]
+        time = StatBase.get_datetime_for_interval(smallestInterval)
+
+        coll = self._get_collection(smallestInterval)
+        coll.update_one({"_id":{"time":time,"key":parameter}},{"$inc":{"value":count}},True)
+
+    
+    @handle_database_errors
+    def on_interval(self) -> None:
+        """
+        Call this function periodically, at least as often as the second
+        smallest interval
+        """
+        global database
+        #let's assume this is called every second smallest interval
+        if len(self.intervals) < 2:
+            return
+        
+        now = datetime.now(tz=None)
+
+        for i in range(1,len(self.intervals)):
+            interval = self.intervals[i]
+            
+            #check if the result exists and create the aggregation if needed
+            current_time = StatBase.get_datetime_for_interval(interval,now) 
+            #end of the measure window
+            time = StatBase.get_prev_interval(interval,current_time) 
+            #start of the measure window
+
+            #collection to collect the data from
+            coll = self._get_collection(EventInterval(interval.value-1))
+            coll_target = self._get_collection(interval)
+    
+            if coll_target.count_documents({"_id":time}) == 0:
+                coll.aggregate([
+                    {"$match":{"_id":{"$lt":current_time,"$gte":time}}},
+                    {"$group":{"_id":{"time":time,"key":"$_id.key"},"value":{"$sum":"$value"}}},
+                    {"$merge":{
+                        "out":self.name+"_"+str(interval)
+                    }}
+                ])
+
+                #if the $match is empty, no document is created
+                if coll_target.count_documents({"_id":time}) == 0:
+                    coll_target.insert_one({"_id":time,"value":0})
+    
+    @handle_database_errors
+    def get_data_view(self,interval:EventInterval,start_date:datetime,
+                      end_date:datetime) -> typing.Tuple[typing.List[datetime],typing.List[int]]:
+        """
+        Gets the collected data from the time range.
+        Returns a list of keys and values as `list[datetime], list[int]`
+        """
+        coll = self._get_collection(interval)
+        cursor = coll.find(
+            filter={"_id.time":{"$gte":start_date,"$lte":end_date}},
+            sort=[('_id.time', pymongo.ASCENDING)]
+        )
+
+        keys = []
+        values = []
+
+        key = StatBase.get_datetime_for_interval(interval,start_date)
+        key = StatBase.get_prev_interval(interval,key) 
+
+        no_more_doc = False
+        needs_next_doc = True
+        while True:
+            keys.append(key)
+            value = {}
+            while not no_more_doc:
+                if needs_next_doc:
+                    try:
+                        doc = cursor.next()
+                    except StopIteration:
+                        no_more_doc = True
+                        break
+                if doc['_id']['time'] == key:
+                    value[doc['_id']['key']] = doc['value']
+                    needs_next_doc = True
+                else:
+                    needs_next_doc = False
+                    break
+
+            values.append(value)
+            key = StatBase.get_next_interval(interval,key)
+            if key > end_date:
+                break
+        
+        return keys,values
 
 class StateStat(StatBase):
     """
