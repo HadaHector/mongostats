@@ -363,7 +363,7 @@ class StateStat(StatBase):
     def __init__(
             self, name: str, start_event:str=None, end_event:str=None,
             magnitude_event:str=None, duration_event:str=None,
-            unique_start_event:str=None,
+            unique_start_event:str=None, event_tracking:str=None,
             min_interval: EventInterval = EventInterval.MINUTE,
             max_interval: EventInterval = EventInterval.MONTH,
             expire_after_seconds=None) -> None:
@@ -383,6 +383,8 @@ class StateStat(StatBase):
           - `unique_start_event` (optional): name of the unique start event,
             if provided it will be measured in an :class:`EventStat` object,
             the unique ids that has session in the interval measured
+          - `event_tracking` (optional): name of the collection where the
+            event_tracking are stored if provided
           - `duration_event` (optional): name of the collection where the
             session durations are stored if provided
           - `min_interval`: smallest time interval of the measurement
@@ -415,6 +417,7 @@ class StateStat(StatBase):
             self.unique_start_event:EventStat | None = EventStat(unique_start_event)
             self.unique_start_event.intervals = self.intervals
 
+        self.event_tracking_name = event_tracking
         self.duration_event_name = duration_event
 
         if expire_after_seconds:
@@ -439,7 +442,7 @@ class StateStat(StatBase):
 
         try:
             coll = self._get_session_collection()
-            coll.insert_one({"_id":id,"created":datetime.now()})
+            coll.insert_one({"_id":id,"created":datetime.now(),"events":[]})
         except pymongo.DuplicateKeyError:
             self.on_end_event(id)
             self.on_start_event(id)
@@ -477,7 +480,37 @@ class StateStat(StatBase):
 
             coll = database[self.duration_event_name]
             coll.insert_one({"duration":duration,"endTime":datetime.now()})
+        
+        if self.event_tracking_name:
+            if 'events' in doc and len(doc['events']):
+                coll = database[self.event_tracking_name]
+                coll.insert_one({"startTime":duration,"endTime":datetime.now(),'events':doc['events']})
+
     
+    @handle_database_errors
+    def on_custom_event(self,id,event_name,extra_info=None):
+        """
+        Call this function when you want to add an event to the event tracking.
+        Provide the unique id for the state
+        Provide the name of the event and extra info if needed
+        """
+        global database
+
+        coll = self._get_session_collection()
+        doc = coll.find_one({"_id":id},projection={'created': True})
+        if  not doc:
+            return
+
+        delta = datetime.now() - doc["created"]
+        duration = delta.total_seconds()
+
+        new_data = {
+            'event': event_name,
+            'time': duration
+        }
+
+        coll.update_one({"_id":id},{'$push':{'events':new_data}})
+
     @handle_database_errors
     def on_interval(self) -> None:
         """
