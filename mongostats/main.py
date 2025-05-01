@@ -443,7 +443,7 @@ class StateStat(StatBase):
         try:
             coll = self._get_session_collection()
             coll.insert_one({"_id":id,"created":datetime.now(),"events":[]})
-        except pymongo.DuplicateKeyError:
+        except pymongo.errors.DuplicateKeyError:
             self.on_end_event(id)
             self.on_start_event(id)
             return
