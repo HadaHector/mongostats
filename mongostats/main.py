@@ -171,7 +171,7 @@ class EventStat(StatBase):
                     {"$match":{"_id":{"$lt":current_time,"$gte":time}}},
                     {"$group":{"_id":time,"value":{"$sum":"$value"}}},
                     {"$merge":{
-                        "out":self.name+"_"+str(interval)
+                        "into":self.name+"_"+str(interval)
                     }}
                 ])
 
@@ -302,7 +302,7 @@ class MultiNumericStat(StatBase):
                     {"$match":{"_id":{"$lt":current_time,"$gte":time}}},
                     {"$group":{"_id":{"time":time,"key":"$_id.key"},"value":{"$sum":"$value"}}},
                     {"$merge":{
-                        "out":self.name+"_"+str(interval)
+                        "into":self.name+"_"+str(interval)
                     }}
                 ])
 
