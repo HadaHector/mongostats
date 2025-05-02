@@ -2,6 +2,7 @@ from datetime import datetime,timedelta
 import pymongo as pymongo
 from enum import IntEnum
 import pymongo.collection
+import pymongo.errors
 import typing
 import math
 
@@ -488,7 +489,7 @@ class StateStat(StatBase):
 
     
     @handle_database_errors
-    def on_custom_event(self,id,event_name,extra_info=None):
+    def on_custom_event(self,id,event_name,extra_info=None,timeoffset=0):
         """
         Call this function when you want to add an event to the event tracking.
         Provide the unique id for the state
@@ -502,12 +503,15 @@ class StateStat(StatBase):
             return
 
         delta = datetime.now() - doc["created"]
-        duration = delta.total_seconds()
+        duration = delta.total_seconds() - timeoffset
 
         new_data = {
             'event': event_name,
             'time': duration
         }
+
+        if extra_info:
+            new_data['data'] = extra_info
 
         coll.update_one({"_id":id},{'$push':{'events':new_data}})
 
@@ -564,26 +568,25 @@ class StateStat(StatBase):
                     if colltarget.count_documents({"_id":time}) == 0:
                         colltarget.insert_one({"_id":time,"value":0})
         
-        smallest_rounded = StatBase.get_datetime_for_interval(interval,now)
-        for i in range(len(self.unique_start_event.intervals)):
-            interval = self.unique_start_event.intervals[i]
-            currenttime = StatBase.get_datetime_for_interval(interval,now)
+        if self.unique_start_event:
+            smallest_rounded = StatBase.get_datetime_for_interval(interval,now)
+            for i in range(len(self.unique_start_event.intervals)):
+                interval = self.unique_start_event.intervals[i]
+                currenttime = StatBase.get_datetime_for_interval(interval,now)
 
-            #only do the larger intervals when needed
-            if smallest_rounded == currenttime:
-                coll = self.unique_start_event._get_collection(interval)
-                measurecoll = database[self.name+"_UNIQUE_"+interval]
-                
-                #get the count of ids on the current interval and save it
-                count = measurecoll.count_documents()
-                coll.insert_one({"_id":currenttime,"value":count})
-
-                #overwrite the current ids with the currently online players ids
-                # sessions -> unique_interval
-                self._get_session_collection().aggregate([
-                    {"$project":{"_id":1}},
-                    {"$out":self.name+"_UNIQUE_"+interval}
-                ])
+                #only do the larger intervals when needed
+                if smallest_rounded == currenttime:
+                    coll = self.unique_start_event._get_collection(interval)
+                    measurecoll = database[self.name+"_UNIQUE_"+interval]
+                    
+                    count = 0
+                    if measurecoll:
+                        #get the count of ids on the current interval and save it
+                        count = measurecoll.count_documents()
+                        #clear the id collection
+                        measurecoll.drop()
+                    
+                    coll.insert_one({"_id":currenttime,"value":count})
 
 
         
