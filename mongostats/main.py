@@ -586,7 +586,7 @@ class StateStat(StatBase):
                         #clear the id collection
                         measurecoll.drop()
                     
-                    coll.insert_one({"_id":currenttime,"value":count})
+                    coll.insert_one({"_id":time,"value":count})
 
 
         
