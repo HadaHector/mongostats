@@ -569,24 +569,124 @@ class StateStat(StatBase):
                         colltarget.insert_one({"_id":time,"value":0})
         
         if self.unique_start_event:
-            smallest_rounded = StatBase.get_datetime_for_interval(interval,now)
+            smallest_rounded = StatBase.get_datetime_for_interval(self.unique_start_event.intervals[0],now)
             for i in range(len(self.unique_start_event.intervals)):
                 interval = self.unique_start_event.intervals[i]
                 currenttime = StatBase.get_datetime_for_interval(interval,now)
+                time = StatBase.get_prev_interval(interval,currenttime)
 
                 #only do the larger intervals when needed
                 if smallest_rounded == currenttime:
                     coll = self.unique_start_event._get_collection(interval)
-                    measurecoll = database[self.name+"_UNIQUE_"+interval]
+                    measurecoll = database[self.name+"_UNIQUE_"+str(interval)]
                     
                     count = 0
-                    if measurecoll:
+                    if measurecoll is not None:
                         #get the count of ids on the current interval and save it
                         count = measurecoll.count_documents()
                         #clear the id collection
                         measurecoll.drop()
                     
-                    coll.insert_one({"_id":currenttime,"value":count})
+                    coll.insert_one({"_id":time,"value":count})
+
+    @handle_database_errors
+    def get_funnel_analysis(self,start_date:datetime,end_date:datetime,
+                            event_list:typing.List[str]) -> typing.List[typing.Tuple[str,int]]:
+        """
+        Makes a funnel analysis for the given time range.
+        Uses the event_list for the funnel
+        Returns a list of the events with how many of them are completed it in a session`
+        """
+
+        if not self.event_tracking_name:
+            return []
+        
+        if len(event_list) < 2:
+            return []
+        
+        coll = database[self.event_tracking_name]
+
+        cursor = coll.aggregate([
+            #filter out that are not even starting the 
+            {
+                "$match": {
+                    "startTime":{ {"$gte":start_date,"$lte":end_date} },
+                    "events.event": event_list[0]
+                }
+            },
+            #make a list for each event what index are they on (-1 if missing)
+            {
+                "$project": {
+                    "steps": {
+                        "$map": {
+                            "input": event_list,
+                            "as": "step",
+                            "in": {
+                                "step": "$$step",
+                                "index": {
+                                    "$indexOfArray": [
+                                        "$events.event",
+                                        "$$step"
+                                    ]
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            #lets reduce the arrays to find out how many steps are completed
+            {
+                "$addFields": {
+                    "reached": {
+                        "$reduce": {
+                            "input": "$steps",
+                            "initialValue": {
+                                "prevIndex": -1,
+                                "stepCount": 0,
+                                "locked": False
+                            },
+                            "in": {
+                                "$cond": [
+                                    {
+                                        "$and": [
+                                        { "$not": "$$value.locked" },
+                                        { "$gt": ["$$this.index", "$$value.prevIndex"] }
+                                        ]
+                                    },
+                                    {
+                                        "prevIndex": "$$this.index",
+                                        "stepCount": { "$add": ["$$value.stepCount", 1] },
+                                        "locked": False
+                                    },
+                                    {
+                                        "prevIndex": "$$value.prevIndex",
+                                        "stepCount": "$$value.stepCount",
+                                        "locked": True
+                                    }
+                                ]
+                            }
+                        }
+                    }
+                }
+            },
+            #group by completed steps
+            {
+                "$group": {
+                    "_id": "$reached.stepCount",
+                    "count": { "$sum": 1 }
+                }
+            },
+            #sort the result by step number
+            {
+                "$sort": { "_id": 1 }
+            }
+        ])
+
+        result = []
+        for doc in cursor:
+            result.append((doc["_id"],doc["count"]))
+        
+        return result
 
 
         
