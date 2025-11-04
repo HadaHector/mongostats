@@ -298,9 +298,9 @@ class MultiNumericStat(StatBase):
             coll = self._get_collection(EventInterval(interval.value-1))
             coll_target = self._get_collection(interval)
     
-            if coll_target.count_documents({"_id":time}) == 0:
+            if coll_target.count_documents({"_id.time":time}) == 0:
                 coll.aggregate([
-                    {"$match":{"_id":{"$lt":current_time,"$gte":time}}},
+                    {"$match":{"_id.time":{"$lt":current_time,"$gte":time}}},
                     {"$group":{"_id":{"time":time,"key":"$_id.key"},"value":{"$sum":"$value"}}},
                     {"$merge":{
                         "into":self.name+"_"+str(interval)
@@ -308,8 +308,8 @@ class MultiNumericStat(StatBase):
                 ])
 
                 #if the $match is empty, no document is created
-                if coll_target.count_documents({"_id":time}) == 0:
-                    coll_target.insert_one({"_id":time,"value":0})
+                if coll_target.count_documents({"_id":{"time":time}}) == 0:
+                    coll_target.insert_one({"_id":{"time":time,"key":"__marker__"},"value":0})
     
     @handle_database_errors
     def get_data_view(self,interval:EventInterval,start_date:datetime,
@@ -452,7 +452,7 @@ class StateStat(StatBase):
         if self.unique_start_event:
             for i in range(1,len(self.intervals)):
                 interval = self.intervals[i]
-                coll = database[self.name+"_UNIQUE_"+interval]
+                coll = database[self.name+"_UNIQUE_"+str(interval)]
                 doc = {"_id":id}
                 coll.replace_one(doc,doc,upsert=True)
 
@@ -612,7 +612,7 @@ class StateStat(StatBase):
             #filter out that are not even starting the 
             {
                 "$match": {
-                    "startTime":{ {"$gte":start_date,"$lte":end_date} },
+                    "startTime":{ "$gte":start_date,"$lte":end_date },
                     "events.event": event_list[0]
                 }
             },
