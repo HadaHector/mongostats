@@ -589,6 +589,8 @@ class StateStat(StatBase):
                     
                     coll.insert_one({"_id":time,"value":count})
 
+                    coll.insert_one({"_id":time,"value":count})
+
     @handle_database_errors
     def get_funnel_analysis(self,start_date:datetime,end_date:datetime,
                             event_list:typing.List[str]) -> typing.List[typing.Tuple[str,int]]:
@@ -687,7 +689,6 @@ class StateStat(StatBase):
             result.append((doc["_id"],doc["count"]))
         
         return result
-
 
         
  
